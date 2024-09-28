@@ -1,47 +1,22 @@
-#
-# Copyright 2011 Facebook
-#
-# Licensed under the Apache License, Version 2.0 (the "License"); you may
-# not use this file except in compliance with the License. You may obtain
-# a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
 """A non-blocking, single-threaded TCP server."""
-
 import errno
 import os
 import socket
 import ssl
-
 from tornado import gen
 from tornado.log import app_log
 from tornado.ioloop import IOLoop
 from tornado.iostream import IOStream, SSLIOStream
-from tornado.netutil import (
-    bind_sockets,
-    add_accept_handler,
-    ssl_wrap_socket,
-    _DEFAULT_BACKLOG,
-)
+from tornado.netutil import bind_sockets, add_accept_handler, ssl_wrap_socket, _DEFAULT_BACKLOG
 from tornado import process
 from tornado.util import errno_from_exception
-
 import typing
 from typing import Union, Dict, Any, Iterable, Optional, Awaitable
-
 if typing.TYPE_CHECKING:
-    from typing import Callable, List  # noqa: F401
-
+    from typing import Callable, List
 
 class TCPServer(object):
-    r"""A non-blocking, single-threaded TCP server.
+    """A non-blocking, single-threaded TCP server.
 
     To use `TCPServer`, define a subclass which overrides the `handle_stream`
     method. For example, a simple echo server could be defined like this::
@@ -53,7 +28,7 @@ class TCPServer(object):
           async def handle_stream(self, stream, address):
               while True:
                   try:
-                      data = await stream.read_until(b"\n") await
+                      data = await stream.read_until(b"\\n") await
                       stream.write(data)
                   except StreamClosedError:
                       break
@@ -121,50 +96,24 @@ class TCPServer(object):
        The ``io_loop`` argument has been removed.
     """
 
-    def __init__(
-        self,
-        ssl_options: Optional[Union[Dict[str, Any], ssl.SSLContext]] = None,
-        max_buffer_size: Optional[int] = None,
-        read_chunk_size: Optional[int] = None,
-    ) -> None:
+    def __init__(self, ssl_options: Optional[Union[Dict[str, Any], ssl.SSLContext]]=None, max_buffer_size: Optional[int]=None, read_chunk_size: Optional[int]=None) -> None:
         self.ssl_options = ssl_options
-        self._sockets = {}  # type: Dict[int, socket.socket]
-        self._handlers = {}  # type: Dict[int, Callable[[], None]]
-        self._pending_sockets = []  # type: List[socket.socket]
+        self._sockets = {}
+        self._handlers = {}
+        self._pending_sockets = []
         self._started = False
         self._stopped = False
         self.max_buffer_size = max_buffer_size
         self.read_chunk_size = read_chunk_size
-
-        # Verify the SSL options. Otherwise we don't get errors until clients
-        # connect. This doesn't verify that the keys are legitimate, but
-        # the SSL module doesn't do that until there is a connected socket
-        # which seems like too much work
         if self.ssl_options is not None and isinstance(self.ssl_options, dict):
-            # Only certfile is required: it can contain both keys
-            if "certfile" not in self.ssl_options:
+            if 'certfile' not in self.ssl_options:
                 raise KeyError('missing key "certfile" in ssl_options')
+            if not os.path.exists(self.ssl_options['certfile']):
+                raise ValueError('certfile "%s" does not exist' % self.ssl_options['certfile'])
+            if 'keyfile' in self.ssl_options and (not os.path.exists(self.ssl_options['keyfile'])):
+                raise ValueError('keyfile "%s" does not exist' % self.ssl_options['keyfile'])
 
-            if not os.path.exists(self.ssl_options["certfile"]):
-                raise ValueError(
-                    'certfile "%s" does not exist' % self.ssl_options["certfile"]
-                )
-            if "keyfile" in self.ssl_options and not os.path.exists(
-                self.ssl_options["keyfile"]
-            ):
-                raise ValueError(
-                    'keyfile "%s" does not exist' % self.ssl_options["keyfile"]
-                )
-
-    def listen(
-        self,
-        port: int,
-        address: Optional[str] = None,
-        family: socket.AddressFamily = socket.AF_UNSPEC,
-        backlog: int = _DEFAULT_BACKLOG,
-        flags: Optional[int] = None,
-        reuse_port: bool = False,
-    ) -> None:
+    def listen(self, port: int, address: Optional[str]=None, family: socket.AddressFamily=socket.AF_UNSPEC, backlog: int=_DEFAULT_BACKLOG, flags: Optional[int]=None, reuse_port: bool=False) -> None:
         """Starts accepting connections on the given port.
 
         This method may be called more than once to listen on multiple ports.
@@ -180,15 +129,7 @@ class TCPServer(object):
            Added ``family``, ``backlog``, ``flags``, and ``reuse_port``
            arguments to match `tornado.netutil.bind_sockets`.
         """
-        sockets = bind_sockets(
-            port,
-            address=address,
-            family=family,
-            backlog=backlog,
-            flags=flags,
-            reuse_port=reuse_port,
-        )
-        self.add_sockets(sockets)
+        pass
 
     def add_sockets(self, sockets: Iterable[socket.socket]) -> None:
         """Makes this server start accepting connections on the given sockets.
@@ -199,25 +140,13 @@ class TCPServer(object):
         method and `tornado.process.fork_processes` to provide greater
         control over the initialization of a multi-process server.
         """
-        for sock in sockets:
-            self._sockets[sock.fileno()] = sock
-            self._handlers[sock.fileno()] = add_accept_handler(
-                sock, self._handle_connection
-            )
+        pass
 
     def add_socket(self, socket: socket.socket) -> None:
         """Singular version of `add_sockets`.  Takes a single socket object."""
-        self.add_sockets([socket])
+        pass
 
-    def bind(
-        self,
-        port: int,
-        address: Optional[str] = None,
-        family: socket.AddressFamily = socket.AF_UNSPEC,
-        backlog: int = _DEFAULT_BACKLOG,
-        flags: Optional[int] = None,
-        reuse_port: bool = False,
-    ) -> None:
+    def bind(self, port: int, address: Optional[str]=None, family: socket.AddressFamily=socket.AF_UNSPEC, backlog: int=_DEFAULT_BACKLOG, flags: Optional[int]=None, reuse_port: bool=False) -> None:
         """Binds this server to the given port on the given address.
 
         To start the server, call `start`. If you want to run this server in a
@@ -248,22 +177,9 @@ class TCPServer(object):
            Use either ``listen()`` or ``add_sockets()`` instead of ``bind()``
            and ``start()``.
         """
-        sockets = bind_sockets(
-            port,
-            address=address,
-            family=family,
-            backlog=backlog,
-            flags=flags,
-            reuse_port=reuse_port,
-        )
-        if self._started:
-            self.add_sockets(sockets)
-        else:
-            self._pending_sockets.extend(sockets)
+        pass
 
-    def start(
-        self, num_processes: Optional[int] = 1, max_restarts: Optional[int] = None
-    ) -> None:
+    def start(self, num_processes: Optional[int]=1, max_restarts: Optional[int]=None) -> None:
         """Starts this server in the `.IOLoop`.
 
         By default, we run the server in this process and do not fork any
@@ -295,13 +211,7 @@ class TCPServer(object):
            Use either ``listen()`` or ``add_sockets()`` instead of ``bind()``
            and ``start()``.
         """
-        assert not self._started
-        self._started = True
-        if num_processes != 1:
-            process.fork_processes(num_processes, max_restarts)
-        sockets = self._pending_sockets
-        self._pending_sockets = []
-        self.add_sockets(sockets)
+        pass
 
     def stop(self) -> None:
         """Stops listening for new connections.
@@ -309,18 +219,9 @@ class TCPServer(object):
         Requests currently in progress may still continue after the
         server is stopped.
         """
-        if self._stopped:
-            return
-        self._stopped = True
-        for fd, sock in self._sockets.items():
-            assert sock.fileno() == fd
-            # Unregister socket from IOLoop
-            self._handlers.pop(fd)()
-            sock.close()
+        pass
 
-    def handle_stream(
-        self, stream: IOStream, address: tuple
-    ) -> Optional[Awaitable[None]]:
+    def handle_stream(self, stream: IOStream, address: tuple) -> Optional[Awaitable[None]]:
         """Override to handle a new `.IOStream` from an incoming connection.
 
         This method may be a coroutine; if so any exceptions it raises
@@ -335,56 +236,4 @@ class TCPServer(object):
         .. versionchanged:: 4.2
            Added the option for this method to be a coroutine.
         """
-        raise NotImplementedError()
-
-    def _handle_connection(self, connection: socket.socket, address: Any) -> None:
-        if self.ssl_options is not None:
-            assert ssl, "Python 2.6+ and OpenSSL required for SSL"
-            try:
-                connection = ssl_wrap_socket(
-                    connection,
-                    self.ssl_options,
-                    server_side=True,
-                    do_handshake_on_connect=False,
-                )
-            except ssl.SSLError as err:
-                if err.args[0] == ssl.SSL_ERROR_EOF:
-                    return connection.close()
-                else:
-                    raise
-            except socket.error as err:
-                # If the connection is closed immediately after it is created
-                # (as in a port scan), we can get one of several errors.
-                # wrap_socket makes an internal call to getpeername,
-                # which may return either EINVAL (Mac OS X) or ENOTCONN
-                # (Linux).  If it returns ENOTCONN, this error is
-                # silently swallowed by the ssl module, so we need to
-                # catch another error later on (AttributeError in
-                # SSLIOStream._do_ssl_handshake).
-                # To test this behavior, try nmap with the -sT flag.
-                # https://github.com/tornadoweb/tornado/pull/750
-                if errno_from_exception(err) in (errno.ECONNABORTED, errno.EINVAL):
-                    return connection.close()
-                else:
-                    raise
-        try:
-            if self.ssl_options is not None:
-                stream = SSLIOStream(
-                    connection,
-                    max_buffer_size=self.max_buffer_size,
-                    read_chunk_size=self.read_chunk_size,
-                )  # type: IOStream
-            else:
-                stream = IOStream(
-                    connection,
-                    max_buffer_size=self.max_buffer_size,
-                    read_chunk_size=self.read_chunk_size,
-                )
-
-            future = self.handle_stream(stream, address)
-            if future is not None:
-                IOLoop.current().add_future(
-                    gen.convert_yielded(future), lambda f: f.result()
-                )
-        except Exception:
-            app_log.error("Error in connection callback", exc_info=True)
+        pass
