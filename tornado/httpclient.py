@@ -210,6 +210,26 @@ class AsyncHTTPClient(Configurable):
         """
         pass
 
+def main() -> None:
+    """A simple HTTP client command-line interface.
+
+    Usage: python -m tornado.httpclient [OPTIONS] URL
+
+    Options:
+        -h, --help       Show this help information
+        -v, --verbose    Show response headers
+        -q, --quiet      Don't show response body
+        -O, --output-file=FILE  Save response body to file
+        -H, --header=KEY:VALUE  Add header to request
+        -m, --method=METHOD  HTTP method (default GET)
+        -b, --body=BODY  Request body (implies POST if no -m is given)
+        -c, --ca-certs=FILE  SSL certificate authority file
+        -k, --insecure   Don't validate SSL certificates
+        -p, --proxy=HOST:PORT  Use HTTP proxy
+        -n, --no-verify-ssl  Don't validate SSL certificates
+    """
+    pass
+
     @classmethod
     def configure(cls, impl: 'Union[None, str, Type[Configurable]]', **kwargs: Any) -> None:
         """Configures the `AsyncHTTPClient` subclass to use.

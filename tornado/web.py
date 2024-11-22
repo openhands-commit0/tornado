@@ -102,6 +102,114 @@ class _ArgDefaultMarker:
     pass
 _ARG_DEFAULT = _ArgDefaultMarker()
 
+def _unimplemented_method(*args: Any, **kwargs: Any) -> None:
+    raise HTTPError(405)
+
+def _create_signature_v1(secret: Union[str, bytes], *parts: Union[str, bytes]) -> bytes:
+    hash = hmac.new(utf8(secret), digestmod=hashlib.sha1)
+    for part in parts:
+        hash.update(utf8(part))
+    return utf8(hash.hexdigest())
+
+def get_signature_key_version(value: Union[None, str, bytes]) -> Optional[int]:
+    """Extract the signature key version from the given signed value.
+
+    Returns None if the version cannot be determined.
+    """
+    if value is None:
+        return None
+    value = utf8(value)
+    parts = value.split(b"|")
+    if len(parts) < 3:
+        return None
+    if len(parts) > 3:
+        try:
+            return int(parts[3])
+        except ValueError:
+            return None
+    return None
+
+def decode_signed_value(secret: _CookieSecretTypes, name: str, value: Union[None, str, bytes], max_age_days: Optional[float]=31, min_version: Optional[int]=None, clock: Callable[[], float]=None) -> Optional[bytes]:
+    """Decode a signed value.
+
+    Returns the decoded value if the signature is valid and the value is not
+    expired, or None otherwise.
+    """
+    if min_version is None:
+        min_version = DEFAULT_SIGNED_VALUE_MIN_VERSION
+    if clock is None:
+        clock = time.time
+    if value is None:
+        return None
+    value = utf8(value)
+    parts = value.split(b"|")
+    if len(parts) < 3:
+        return None
+    signature = parts[-1]
+    if not isinstance(secret, dict):
+        expected_sig = _create_signature_v1(secret, name, parts[0], parts[1])
+        if not hmac.compare_digest(utf8(expected_sig), utf8(signature)):
+            return None
+        timestamp = int(parts[1])
+        if timestamp < int(clock()) - max_age_days * 86400:
+            return None
+        try:
+            return base64.b64decode(parts[0])
+        except Exception:
+            return None
+    else:
+        version = 2
+        if len(parts) < 4:
+            return None
+        key_version = int(parts[-1])
+        if key_version not in secret:
+            return None
+        expected_sig = _create_signature_v1(secret[key_version], name, parts[0], parts[1])
+        if not hmac.compare_digest(utf8(expected_sig), utf8(signature)):
+            return None
+        timestamp = int(parts[1])
+        if timestamp < int(clock()) - max_age_days * 86400:
+            return None
+        try:
+            return base64.b64decode(parts[0])
+        except Exception:
+            return None
+
+def create_signed_value(secret: _CookieSecretTypes, name: str, value: Union[str, bytes], version: Optional[int]=None, clock: Callable[[], float]=None, key_version: Optional[int]=None) -> bytes:
+    """Signs and timestamps a string so it cannot be forged.
+
+    Stores signatures in the format: value|timestamp|signature[|key_version].
+    Parts are joined with pipes, and may not contain pipes themselves.
+    """
+    if version is None:
+        version = DEFAULT_SIGNED_VALUE_VERSION
+    if clock is None:
+        clock = time.time
+
+    timestamp = utf8(str(int(clock())))
+    value = base64.b64encode(utf8(value))
+
+    if version == 1:
+        if isinstance(secret, dict):
+            raise ValueError("secret_dict cannot be used with version 1")
+        signature = _create_signature_v1(secret, name, value, timestamp)
+        value = b"|".join([value, timestamp, signature])
+        return value
+    elif version == 2:
+        # Version 2 adds key versioning, but is otherwise the same.
+        if isinstance(secret, dict):
+            if key_version is None:
+                key_version = max(secret.keys())
+            assert key_version in secret
+            secret = secret[key_version]
+        signature = _create_signature_v1(secret, name, value, timestamp)
+        value = b"|".join([value, timestamp, signature])
+        if key_version is not None:
+            value = b"|".join([value, utf8(str(key_version))])
+        return value
+    else:
+        raise ValueError("Unsupported version %d" % version)
+
 class RequestHandler(object):
     """Base class for HTTP request handlers.
 
@@ -137,6 +245,28 @@ class RequestHandler(object):
         assert self.request.connection is not None
         self.request.connection.set_close_callback(self.on_connection_close)
         self.initialize(**kwargs)
+
+    def _initialize(self) -> None:
+        """Hook for subclass initialization.
+
+        A dictionary passed as the third argument of a ``URLSpec`` will be
+        supplied as keyword arguments to initialize().
+
+        Example::
+
+            class ProfileHandler(RequestHandler):
+                def initialize(self, database):
+                    self.database = database
+
+                def get(self, username):
+                    ...
+
+            app = Application([
+                (r'/user/(.*)', ProfileHandler, dict(database=database)),
+                ])
+        """
+        pass
+
     initialize = _initialize
     "Hook for subclass initialization. Called for each request.\n\n    A dictionary passed as the third argument of a ``URLSpec`` will be\n    supplied as keyword arguments to ``initialize()``.\n\n    Example::\n\n        class ProfileHandler(RequestHandler):\n            def initialize(self, database):\n                self.database = database\n\n            def get(self, username):\n                ...\n\n        app = Application([\n            (r'/user/(.*)', ProfileHandler, dict(database=database)),\n            ])\n    "
 

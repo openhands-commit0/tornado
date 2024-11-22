@@ -442,6 +442,172 @@ class _CodeWriter(object):
         self.include_stack = []
         self._indent = 0
 
+def _parse(reader: _TemplateReader, template: Template) -> _ChunkList:
+    """Parses a template file and returns a _ChunkList."""
+    body = _ChunkList([])
+    while True:
+        # Find next template directive
+        curly = 0
+        while True:
+            curly = reader.find("{", curly)
+            if curly == -1 or curly + 1 == len(reader):
+                # EOF
+                if body.chunks:
+                    body.chunks.extend([_Text(reader[reader.pos:], reader.line, reader.whitespace)])
+                return body
+            # Look ahead to see if this is a special sequence
+            if reader[curly + 1] == "{":
+                # Double-curly-braces is an escaped curly
+                if curly + 2 < len(reader) and reader[curly + 2] == "!":
+                    # Special case: convert {{! to just {{
+                    reader.consume(curly + 2)
+                    body.chunks.append(_Text("{{", reader.line, reader.whitespace))
+                    break
+                else:
+                    # This is a template expression
+                    reader.consume(curly)
+                    body.chunks.append(_Expression(reader.read_until("}}"), reader.line))
+                    break
+            elif reader[curly + 1] == "%":
+                # Template directive
+                reader.consume(curly)
+                if reader.current_char == "!":
+                    # Special case: {% ! %} is a comment
+                    reader.consume(1)
+                    reader.read_until("%}")
+                    break
+                else:
+                    # Parse the directive
+                    directive = reader.read_until("%}")
+                    if not directive:
+                        raise ParseError("Empty directive", reader.name, reader.line)
+                    args = directive.strip().split(None, 1)
+                    if not args:
+                        raise ParseError("Empty directive", reader.name, reader.line)
+                    cmd = args[0]
+                    if cmd == "apply":
+                        # apply creates a nested function so we can apply
+                        # an arbitrary function to the output of a block
+                        # {% apply f %} content {% end %}
+                        #   -> f(content)
+                        if len(args) != 2:
+                            raise ParseError("apply requires one argument", reader.name, reader.line)
+                        body.chunks.append(_ApplyBlock(args[1], reader.line, _parse(reader, template)))
+                    elif cmd == "autoescape":
+                        # autoescape changes the default escaping behavior in a
+                        # template.  It can take a function name or None.
+                        if len(args) != 2:
+                            raise ParseError("autoescape requires one argument", reader.name, reader.line)
+                        str_arg = args[1].strip()
+                        if str_arg == "None":
+                            str_arg = None
+                        template.autoescape = str_arg
+                    elif cmd == "block":
+                        # {% block foo %} content {% end %}
+                        #   -> named render blocks
+                        if len(args) != 2:
+                            raise ParseError("block requires one argument", reader.name, reader.line)
+                        block_name = args[1].strip()
+                        block_body = _parse(reader, template)
+                        body.chunks.append(_NamedBlock(block_name, block_body, template, reader.line))
+                    elif cmd == "comment":
+                        # {% comment %} blah {% end %}
+                        #   -> ignore everything inside
+                        reader.read_until("%}")
+                        continue
+                    elif cmd == "extends":
+                        # {% extends filename %}
+                        #   -> inherits from a base template
+                        if len(args) != 2:
+                            raise ParseError("extends requires one argument", reader.name, reader.line)
+                        body.chunks.append(_ExtendsBlock(args[1].strip()))
+                    elif cmd == "for":
+                        # {% for var in expr %} content {% end %}
+                        #   -> for var in expr: content
+                        if len(args) != 2:
+                            raise ParseError("for requires an expression", reader.name, reader.line)
+                        body.chunks.append(_ControlBlock(args[1], reader.line, _parse(reader, template)))
+                    elif cmd == "from":
+                        # {% from module import name [as name] %}
+                        if len(args) != 2:
+                            raise ParseError("from requires a module and name", reader.name, reader.line)
+                        body.chunks.append(_Statement(args[1], reader.line))
+                    elif cmd == "if":
+                        # {% if expr %} content {% end %}
+                        #   -> if expr: content
+                        if len(args) != 2:
+                            raise ParseError("if requires an expression", reader.name, reader.line)
+                        body.chunks.append(_ControlBlock(args[1], reader.line, _parse(reader, template)))
+                    elif cmd == "import":
+                        # {% import module %}
+                        if len(args) != 2:
+                            raise ParseError("import requires one argument", reader.name, reader.line)
+                        body.chunks.append(_Statement(args[1], reader.line))
+                    elif cmd == "include":
+                        # {% include filename %}
+                        if len(args) != 2:
+                            raise ParseError("include requires one argument", reader.name, reader.line)
+                        body.chunks.append(_IncludeBlock(args[1].strip(), reader, reader.line))
+                    elif cmd == "module":
+                        # {% module expr %}
+                        if len(args) != 2:
+                            raise ParseError("module requires one argument", reader.name, reader.line)
+                        body.chunks.append(_Module(args[1], reader.line))
+                    elif cmd == "raw":
+                        # {% raw expr %}
+                        if len(args) != 2:
+                            raise ParseError("raw requires one argument", reader.name, reader.line)
+                        body.chunks.append(_Expression(args[1], reader.line, raw=True))
+                    elif cmd == "set":
+                        # {% set x = y %}
+                        if len(args) != 2:
+                            raise ParseError("set requires an expression", reader.name, reader.line)
+                        body.chunks.append(_Statement(args[1], reader.line))
+                    elif cmd == "try":
+                        # {% try %} content {% except %} content {% end %}
+                        body.chunks.append(_ControlBlock(args[0], reader.line, _parse(reader, template)))
+                    elif cmd == "while":
+                        # {% while expr %} content {% end %}
+                        if len(args) != 2:
+                            raise ParseError("while requires an expression", reader.name, reader.line)
+                        body.chunks.append(_ControlBlock(args[1], reader.line, _parse(reader, template)))
+                    elif cmd == "whitespace":
+                        # {% whitespace mode %}
+                        if len(args) != 2:
+                            raise ParseError("whitespace requires one argument", reader.name, reader.line)
+                        reader.whitespace = args[1].strip()
+                    elif cmd == "end":
+                        # {% end %} or variants like {% end if %}
+                        return body
+                    elif cmd == "else":
+                        # {% else %} or {% else if expr %}
+                        body.chunks.append(_IntermediateControlBlock(directive, reader.line))
+                    elif cmd == "elif":
+                        # {% elif expr %}
+                        if len(args) != 2:
+                            raise ParseError("elif requires an expression", reader.name, reader.line)
+                        body.chunks.append(_IntermediateControlBlock(directive, reader.line))
+                    elif cmd == "except":
+                        # {% except %} or {% except ExceptionName %}
+                        body.chunks.append(_IntermediateControlBlock(directive, reader.line))
+                    elif cmd == "finally":
+                        # {% finally %}
+                        body.chunks.append(_IntermediateControlBlock(directive, reader.line))
+                    elif cmd in ("break", "continue"):
+                        # {% break %}, {% continue %}
+                        body.chunks.append(_Statement(cmd, reader.line))
+                    else:
+                        raise ParseError("unknown directive %r" % cmd, reader.name, reader.line)
+                    break
+            elif reader[curly + 1] == "#":
+                # Template comment
+                reader.consume(curly + 1)
+                reader.read_until("#}")
+                break
+            else:
+                # Not a special sequence
+                curly += 1
+
 class _TemplateReader(object):
 
     def __init__(self, name: str, text: str, whitespace: str) -> None:

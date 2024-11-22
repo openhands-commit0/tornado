@@ -105,10 +105,18 @@ class OptionParser(object):
     which reference a global instance.
     """
 
+    def _help_callback(self, value: bool) -> None:
+        if value:
+            self.print_help()
+            sys.exit(0)
+
     def __init__(self) -> None:
         self.__dict__['_options'] = {}
         self.__dict__['_parse_callbacks'] = []
         self.define('help', type=bool, help='show this help information', callback=self._help_callback)
+
+    def _normalize_name(self, name: str) -> str:
+        return name.replace('-', '_')
 
     def __getattr__(self, name: str) -> Any:
         name = self._normalize_name(name)
@@ -140,14 +148,18 @@ class OptionParser(object):
 
         .. versionadded:: 3.1
         """
-        pass
+        return [(name, self[name]) for name in self]
 
     def groups(self) -> Set[str]:
         """The set of option-groups created by ``define``.
 
         .. versionadded:: 3.1
         """
-        pass
+        groups = set()
+        for option in self._options.values():
+            if option.group_name:
+                groups.add(option.group_name)
+        return groups
 
     def group_dict(self, group: str) -> Dict[str, Any]:
         """The names and values of options in a group.
@@ -166,14 +178,18 @@ class OptionParser(object):
 
         .. versionadded:: 3.1
         """
-        pass
+        result = {}
+        for option in self._options.values():
+            if option.group_name == group:
+                result[option.name] = self[option.name]
+        return result
 
     def as_dict(self) -> Dict[str, Any]:
         """The names and values of all options.
 
         .. versionadded:: 3.1
         """
-        pass
+        return dict(self.items())
 
     def define(self, name: str, default: Any=None, type: Optional[type]=None, help: Optional[str]=None, metavar: Optional[str]=None, multiple: bool=False, group: Optional[str]=None, callback: Optional[Callable[[Any], None]]=None) -> None:
         """Defines a new command line option.
@@ -210,7 +226,25 @@ class OptionParser(object):
         by later flags.
 
         """
-        pass
+        normalized = self._normalize_name(name)
+        if normalized in self._options:
+            raise Error("Option %r already defined in %s", normalized,
+                      self._options[normalized].file_name)
+        frame = sys._getframe(0)
+        options_file = frame.f_code.co_filename
+
+        if type is None:
+            if default is not None:
+                type = default.__class__
+            else:
+                type = str
+        if group is None:
+            group = options_file
+
+        self._options[normalized] = _Option(name, default=default,
+                                          type=type, help=help, metavar=metavar,
+                                          multiple=multiple, file_name=options_file,
+                                          group_name=group, callback=callback)
 
     def parse_command_line(self, args: Optional[List[str]]=None, final: bool=True) -> List[str]:
         """Parses all options given on the command line (defaults to
@@ -234,7 +268,37 @@ class OptionParser(object):
         from multiple sources.
 
         """
-        pass
+        if args is None:
+            args = sys.argv
+        remaining = []
+        for i in range(1, len(args)):
+            # Skip any arguments that don't start with "-"
+            if not args[i].startswith("-"):
+                remaining.append(args[i])
+                continue
+            if args[i].startswith("--"):
+                # Strip the leading "--"
+                name = args[i][2:]
+            else:
+                # Strip the leading "-"
+                name = args[i][1:]
+            name, equals, value = name.partition("=")
+            name = self._normalize_name(name)
+            if name not in self._options:
+                self.print_help()
+                raise Error('Unrecognized command line option: %r' % name)
+            option = self._options[name]
+            if not equals:
+                if option.type == bool:
+                    value = "true"
+                else:
+                    raise Error('Option %r requires a value' % name)
+            option.parse(value)
+
+        if final:
+            self.run_parse_callbacks()
+
+        return remaining
 
     def parse_config_file(self, path: str, final: bool=True) -> None:
         """Parses and loads the config file at the given path.
@@ -282,15 +346,45 @@ class OptionParser(object):
            Added the ability to set options via strings in config files.
 
         """
-        pass
+        config = {'__file__': os.path.abspath(path)}
+        with open(path, 'rb') as f:
+            exec_in(native_str(f.read()), config, config)
+        for name in config:
+            if name in self._options:
+                self._options[name].set(config[name])
 
     def print_help(self, file: Optional[TextIO]=None) -> None:
         """Prints all the command line options to stderr (or another file)."""
-        pass
+        if file is None:
+            file = sys.stderr
+        print("Usage: %s [OPTIONS]" % sys.argv[0], file=file)
+        print("\nOptions:\n", file=file)
+        by_group = {}
+        for option in self._options.values():
+            by_group.setdefault(option.group_name, []).append(option)
+
+        for filename, o in sorted(by_group.items()):
+            if filename:
+                print("\n%s options:\n" % os.path.normpath(filename), file=file)
+            o.sort(key=lambda option: option.name)
+            for option in o:
+                prefix = option.name
+                if option.metavar:
+                    prefix += "=" + option.metavar
+                description = option.help or ""
+                if option.default is not None and option.default != "":
+                    description += " (default %s)" % option.default
+                lines = textwrap.wrap(description, 79 - 35)
+                if len(prefix) > 30 or len(lines) == 0:
+                    lines.insert(0, "")
+                print("  --%-30s %s" % (prefix, lines[0]), file=file)
+                for line in lines[1:]:
+                    print("%-34s %s" % (" ", line), file=file)
+        print(file=file)
 
     def add_parse_callback(self, callback: Callable[[], None]) -> None:
         """Adds a parse callback, to be invoked when option parsing is done."""
-        pass
+        self._parse_callbacks.append(callback)
 
     def mockable(self) -> '_Mockable':
         """Returns a wrapper around self that is compatible with
@@ -307,7 +401,7 @@ class OptionParser(object):
             with mock.patch.object(options.mockable(), 'name', value):
                 assert options.name == value
         """
-        pass
+        return _Mockable(self)
 
 class _Mockable(object):
     """`mock.patch` compatible wrapper for `OptionParser`.
@@ -367,33 +461,35 @@ def define(name: str, default: Any=None, type: Optional[type]=None, help: Option
 
     See `OptionParser.define`.
     """
-    pass
+    return options.define(name, default=default, type=type, help=help,
+                        metavar=metavar, multiple=multiple, group=group,
+                        callback=callback)
 
 def parse_command_line(args: Optional[List[str]]=None, final: bool=True) -> List[str]:
     """Parses global options from the command line.
 
     See `OptionParser.parse_command_line`.
     """
-    pass
+    return options.parse_command_line(args, final=final)
 
 def parse_config_file(path: str, final: bool=True) -> None:
     """Parses global options from a config file.
 
     See `OptionParser.parse_config_file`.
     """
-    pass
+    return options.parse_config_file(path, final=final)
 
 def print_help(file: Optional[TextIO]=None) -> None:
     """Prints all the command line options to stderr (or another file).
 
     See `OptionParser.print_help`.
     """
-    pass
+    return options.print_help(file)
 
 def add_parse_callback(callback: Callable[[], None]) -> None:
     """Adds a parse callback, to be invoked when option parsing is done.
 
     See `OptionParser.add_parse_callback`
     """
-    pass
+    return options.add_parse_callback(callback)
 define_logging_options(options)

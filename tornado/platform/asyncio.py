@@ -41,10 +41,28 @@ class _HasFileno(Protocol):
 _FileDescriptorLike = Union[int, _HasFileno]
 _T = TypeVar('_T')
 _selector_loops: Set['SelectorThread'] = set()
+
+def _atexit_callback() -> None:
+    """Cleanup the selector threads at shutdown."""
+    while _selector_loops:
+        loop = _selector_loops.pop()
+        loop.close()
+
 atexit.register(_atexit_callback)
 
 class BaseAsyncIOLoop(IOLoop):
-    pass
+    @classmethod
+    def configurable_base(cls):
+        return IOLoop
+
+    def initialize(self, make_current=True):
+        super().initialize(make_current=make_current)
+        self.asyncio_loop = None
+
+    def close(self, all_fds=False):
+        if self.asyncio_loop is not None:
+            self.asyncio_loop.close()
+        super().close(all_fds=all_fds)
 
 class AsyncIOMainLoop(BaseAsyncIOLoop):
     """``AsyncIOMainLoop`` creates an `.IOLoop` that corresponds to the
@@ -60,6 +78,9 @@ class AsyncIOMainLoop(BaseAsyncIOLoop):
 
        Closing an `AsyncIOMainLoop` now closes the underlying asyncio loop.
     """
+    def initialize(self, **kwargs):
+        super().initialize(**kwargs)
+        self.asyncio_loop = asyncio.get_event_loop()
 
 class AsyncIOLoop(BaseAsyncIOLoop):
     """``AsyncIOLoop`` is an `.IOLoop` that runs on an ``asyncio`` event loop.
